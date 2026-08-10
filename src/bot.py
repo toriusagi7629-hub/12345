@@ -1,11 +1,11 @@
 """
-Main script run on a schedule.
-1. Fetch latest gold price data
-2. Compute breakout / trend / ATR features
-3. Predict breakout success probability with the trained AI model
-4. Fetch news sentiment
-5. Combine everything and notify Discord
-6. Record the last alerted bar in state.json to avoid duplicate notifications
+定期実行されるメインスクリプト。
+1. 最新のゴールド価格データを取得
+2. ブレイクアウト・トレンド・ATRなどの特徴量を計算
+3. 学習済みAIモデルでブレイクアウトの成功確率を予測
+4. ニュースセンチメントを取得
+5. すべてを総合判断してDiscordに通知
+6. 二重通知を防ぐため、直近で通知したバーの時刻をstate.jsonに記録
 """
 import os
 import sys
@@ -30,7 +30,6 @@ ML_PROB_THRESHOLD = 0.55
 NEWS_VETO_THRESHOLD = -0.4
 SL_ATR_MULT = 1.5
 TP_ATR_MULT = 2.5
-TP2_ATR_MULT = 4.0
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
@@ -66,15 +65,11 @@ def send_discord(payload_text, embed):
         print("bot: discord notification sent")
 
 
-def build_embed(direction, price, sl, tp, tp2, ml_prob, trend, news):
+def build_embed(direction, price, sl, tp, ml_prob, trend, news):
     is_long = direction == "LONG"
     color = 3066993 if is_long else 15158332
     arrow = "LONG" if is_long else "SHORT"
     ml_txt = str(ml_prob) if ml_prob is not None else "no model"
-
-    sl_pts = round(abs(price - sl), 2)
-    tp_pts = round(abs(tp - price), 2)
-    tp2_pts = round(abs(tp2 - price), 2)
 
     headlines_txt = ""
     for h in news["top_headlines"][:3]:
@@ -89,10 +84,9 @@ def build_embed(direction, price, sl, tp, tp2, ml_prob, trend, news):
         "color": color,
         "fields": [
             {"name": "price", "value": str(round(price, 2)), "inline": True},
+            {"name": "SL", "value": str(round(sl, 2)), "inline": True},
+            {"name": "TP", "value": str(round(tp, 2)), "inline": True},
             {"name": "AI probability", "value": ml_txt, "inline": True},
-            {"name": "SL", "value": str(round(sl, 2)) + " (-" + str(sl_pts) + "pt)", "inline": True},
-            {"name": "TP", "value": str(round(tp, 2)) + " (+" + str(tp_pts) + "pt)", "inline": True},
-            {"name": "TP2 extended", "value": str(round(tp2, 2)) + " (+" + str(tp2_pts) + "pt)", "inline": True},
             {"name": "trend", "value": trend, "inline": True},
             {"name": "news sentiment", "value": sentiment_txt, "inline": True},
             {"name": "recent headlines", "value": headlines_txt, "inline": False},
@@ -102,12 +96,6 @@ def build_embed(direction, price, sl, tp, tp2, ml_prob, trend, news):
 
 def main():
     state = load_state()
-
-    # ==== TEST START (delete this block once you confirm Discord receives it) ====
-    test_embed = build_embed("LONG", 2400.00, 2394.00, 2410.00, 2425.00, 0.99, "test", {"score": 0, "headline_count": 0, "top_headlines": ["this is a test notification"]})
-    send_discord("TEST MESSAGE", test_embed)
-    return
-    # ==== TEST END ====
 
     df = fetch_latest()
     if df.empty or len(df) < 60:
@@ -162,13 +150,11 @@ def main():
     if direction == "LONG":
         sl = price - atr_val * SL_ATR_MULT
         tp = price + atr_val * TP_ATR_MULT
-        tp2 = price + atr_val * TP2_ATR_MULT
     else:
         sl = price + atr_val * SL_ATR_MULT
         tp = price - atr_val * TP_ATR_MULT
-        tp2 = price - atr_val * TP2_ATR_MULT
 
-    embed = build_embed(direction, price, sl, tp, tp2, ml_prob, trend, news)
+    embed = build_embed(direction, price, sl, tp, ml_prob, trend, news)
     send_discord(direction + " signal at " + str(price), embed)
 
     state["last_alert_bar"] = bar_time
