@@ -1,8 +1,8 @@
 """
 Main script run on a schedule. Loops over every asset in assets_config.ASSETS.
 For each asset:
-1. Fetch latest price data
-2. Compute breakout / trend / ATR features
+1. Fetch latest 5-minute price data and detect a breakout
+2. Confirm the breakout against 1-hour and 1-day trend (multi-timeframe filter)
 3. Predict breakout success probability with that asset's trained AI model
 4. Fetch news sentiment
 5. Estimate a suggested lot size based on account risk and AI confidence
@@ -25,6 +25,11 @@ from assets_config import ASSETS  # noqa: E402
 INTERVAL = "5m"
 PERIOD = "5d"
 
+H1_INTERVAL = "60m"
+H1_PERIOD = "180d"
+D1_INTERVAL = "1d"
+D1_PERIOD = "2y"
+
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "model")
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state.json")
 
@@ -34,10 +39,9 @@ SL_ATR_MULT = 1.5
 TP_ATR_MULT = 2.5
 TP2_ATR_MULT = 4.0
 
-# ---- Position sizing settings (edit these to match your real account/broker) ----
 ACCOUNT_BALANCE_JPY = 10000.0
 RISK_PERCENT = 0.02
-USDJPY_RATE = 150.0              # approximate USD/JPY rate, used to convert USD-quoted assets to JPY risk
+USDJPY_RATE = 150.0
 MIN_CONFIDENCE_SCALE = 0.3
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -55,11 +59,23 @@ def save_state(state):
         json.dump(state, f)
 
 
-def fetch_latest(ticker):
-    df = yf.download(ticker, period=PERIOD, interval=INTERVAL, progress=False)
+def fetch_ohlc(ticker, interval, period):
+    df = yf.download(ticker, period=period, interval=interval, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
+
+
+def get_trend_only(ticker, interval, period):
+    try:
+        df = fetch_ohlc(ticker, interval, period)
+    except Exception as e:
+        print("bot: higher timeframe fetch failed", ticker, interval, e)
+        return None
+    if df.empty or len(df) < 60:
+        return None
+    feat = build_features(df)
+    return feat.iloc[-1]["trend"]
 
 
 def send_discord(payload_text, embed):
@@ -98,7 +114,8 @@ def estimate_lot_size(sl_points, ml_prob, contract_size, quote_currency):
     return lot, round(risk_amount_jpy, 0)
 
 
-def build_embed(asset_label, direction, price, sl, tp, tp2, ml_prob, trend, news, lot_size, risk_amount_jpy, unit_label):
+def build_embed(asset_label, direction, price, sl, tp, tp2, ml_prob, trend, h1_trend, d1_trend,
+                 news, lot_size, risk_amount_jpy, unit_label):
     is_long = direction == "LONG"
     color = 3066993 if is_long else 15158332
     arrow = "LONG" if is_long else "SHORT"
@@ -125,7 +142,9 @@ def build_embed(asset_label, direction, price, sl, tp, tp2, ml_prob, trend, news
             {"name": "SL", "value": str(round(sl, 4)) + " (-" + str(sl_pts) + ")", "inline": True},
             {"name": "TP", "value": str(round(tp, 4)) + " (+" + str(tp_pts) + ")", "inline": True},
             {"name": "TP2 extended", "value": str(round(tp2, 4)) + " (+" + str(tp2_pts) + ")", "inline": True},
-            {"name": "trend", "value": trend, "inline": True},
+            {"name": "5m trend", "value": trend, "inline": True},
+            {"name": "1h trend", "value": h1_trend, "inline": True},
+            {"name": "1d trend", "value": d1_trend, "inline": True},
             {"name": "suggested lot", "value": str(lot_size) + " lot (" + unit_label + ")", "inline": True},
             {"name": "risk amount", "value": str(int(risk_amount_jpy)) + " JPY", "inline": True},
             {"name": "news sentiment", "value": sentiment_txt, "inline": True},
@@ -139,9 +158,9 @@ def process_asset(asset, state):
     ticker = asset["ticker"]
     asset_state = state.get(key, {"last_alert_bar": None})
 
-    df = fetch_latest(ticker)
+    df = fetch_ohlc(ticker, INTERVAL, PERIOD)
     if df.empty or len(df) < 60:
-        print("bot:", key, "not enough data")
+        print("bot:", key, "not enough 5m data")
         state[key] = asset_state
         return
 
@@ -167,11 +186,37 @@ def process_asset(asset, state):
 
     trend = latest["trend"]
     if direction == "LONG" and trend == "down":
-        print("bot:", key, "skip long breakout during downtrend")
+        print("bot:", key, "skip long breakout during 5m downtrend")
         state[key] = asset_state
         return
     if direction == "SHORT" and trend == "up":
-        print("bot:", key, "skip short breakout during uptrend")
+        print("bot:", key, "skip short breakout during 5m uptrend")
+        state[key] = asset_state
+        return
+
+    # ---- multi-timeframe confirmation ----
+    h1_trend = get_trend_only(ticker, H1_INTERVAL, H1_PERIOD)
+    d1_trend = get_trend_only(ticker, D1_INTERVAL, D1_PERIOD)
+
+    if h1_trend is None or d1_trend is None:
+        print("bot:", key, "skip, higher timeframe data unavailable")
+        state[key] = asset_state
+        return
+
+    if direction == "LONG" and h1_trend != "up":
+        print("bot:", key, "skip long, 1h trend not up:", h1_trend)
+        state[key] = asset_state
+        return
+    if direction == "SHORT" and h1_trend != "down":
+        print("bot:", key, "skip short, 1h trend not down:", h1_trend)
+        state[key] = asset_state
+        return
+    if direction == "LONG" and d1_trend == "down":
+        print("bot:", key, "skip long, 1d trend is down")
+        state[key] = asset_state
+        return
+    if direction == "SHORT" and d1_trend == "up":
+        print("bot:", key, "skip short, 1d trend is up")
         state[key] = asset_state
         return
 
@@ -211,8 +256,8 @@ def process_asset(asset, state):
     lot_size, risk_amount_jpy = estimate_lot_size(sl_points, ml_prob, asset["contract_size"], asset["quote_currency"])
 
     embed = build_embed(
-        asset["label"], direction, price, sl, tp, tp2, ml_prob, trend, news,
-        lot_size, risk_amount_jpy, asset["contract_unit_label"]
+        asset["label"], direction, price, sl, tp, tp2, ml_prob, trend, h1_trend, d1_trend,
+        news, lot_size, risk_amount_jpy, asset["contract_unit_label"]
     )
     send_discord(key + " " + direction + " signal at " + str(price), embed)
 
