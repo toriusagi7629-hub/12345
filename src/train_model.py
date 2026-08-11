@@ -1,6 +1,6 @@
 """
-Fetches historical price data for every asset in assets_config.ASSETS and trains
-one breakout-success model per asset, saving each to model/breakout_model_<key>.joblib
+Trains one breakout-success model per (asset, timeframe) combination and saves
+each to model/breakout_model_<asset>_<timeframe>.joblib
 
 Run frequency: about once a week (intended for the scheduled GitHub Actions workflow)
 """
@@ -15,21 +15,32 @@ from sklearn.metrics import accuracy_score, classification_report
 
 sys.path.append(os.path.dirname(__file__))
 from features import build_features, FEATURE_COLUMNS  # noqa: E402
-from assets_config import ASSETS  # noqa: E402
+from assets_config import ASSETS, TIMEFRAMES  # noqa: E402
 
-INTERVAL = "5m"
-PERIOD = "60d"
 LOOKAHEAD_BARS = 6
 SUCCESS_ATR_MULT = 0.8
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "model")
 
 
-def fetch_data(ticker):
-    df = yf.download(ticker, period=PERIOD, interval=INTERVAL, progress=False)
+def fetch_ohlc(ticker, interval, period):
+    df = yf.download(ticker, period=period, interval=interval, progress=False)
     if df.empty:
-        raise RuntimeError("no data returned for " + ticker)
+        raise RuntimeError("no data returned for " + ticker + " " + interval)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+    return df
+
+
+def resample_ohlc(df, rule):
+    agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+    out = df.resample(rule).agg(agg).dropna()
+    return out
+
+
+def fetch_tf_data(ticker, tf):
+    df = fetch_ohlc(ticker, tf["interval"], tf["period"])
+    if tf.get("resample"):
+        df = resample_ohlc(df, tf["resample"])
     return df
 
 
@@ -52,18 +63,17 @@ def build_training_set(df):
     return pd.DataFrame(rows).dropna()
 
 
-def train_one(asset):
-    key = asset["key"]
-    ticker = asset["ticker"]
-    print("train:", key, ticker, "fetching data...")
-    df = fetch_data(ticker)
-    print("train:", key, len(df), "bars fetched")
+def train_one(asset, tf):
+    combo_name = asset["key"] + " " + tf["key"]
+    print("train:", combo_name, "fetching data...")
+    df = fetch_tf_data(asset["ticker"], tf)
+    print("train:", combo_name, len(df), "bars fetched")
 
     train_df = build_training_set(df)
-    print("train:", key, "breakout samples:", len(train_df))
+    print("train:", combo_name, "breakout samples:", len(train_df))
 
     if len(train_df) < 50:
-        print("train:", key, "not enough samples, skipping this run")
+        print("train:", combo_name, "not enough samples, skipping this run")
         return
 
     X = train_df[FEATURE_COLUMNS]
@@ -79,21 +89,24 @@ def train_one(asset):
     model.fit(X_train, y_train)
 
     preds = model.predict(X_test)
-    print("train:", key, "test accuracy:", accuracy_score(y_test, preds))
+    print("train:", combo_name, "test accuracy:", accuracy_score(y_test, preds))
     print(classification_report(y_test, preds, zero_division=0))
 
     os.makedirs(MODEL_DIR, exist_ok=True)
-    model_path = os.path.join(MODEL_DIR, "breakout_model_" + key.lower() + ".joblib")
+    model_path = os.path.join(
+        MODEL_DIR, "breakout_model_" + asset["key"].lower() + "_" + tf["key"].lower() + ".joblib"
+    )
     joblib.dump(model, model_path)
-    print("train:", key, "model saved to", model_path)
+    print("train:", combo_name, "model saved to", model_path)
 
 
 def main():
     for asset in ASSETS:
-        try:
-            train_one(asset)
-        except Exception as e:
-            print("train:", asset["key"], "failed:", e)
+        for tf in TIMEFRAMES:
+            try:
+                train_one(asset, tf)
+            except Exception as e:
+                print("train:", asset["key"], tf["key"], "failed:", e)
 
 
 if __name__ == "__main__":
