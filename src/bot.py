@@ -1,13 +1,15 @@
 """
-Main script run on a schedule. Loops over every asset in assets_config.ASSETS.
-For each asset:
-1. Fetch latest 5-minute price data and detect a breakout
-2. Confirm the breakout against 1-hour and 1-day trend (multi-timeframe filter)
-3. Predict breakout success probability with that asset's trained AI model
+Main script run on a schedule. Loops over every asset and every timeframe
+(5m scalp, 1h swing, 4h swing) defined in assets_config.py.
+
+For each (asset, timeframe):
+1. Fetch price data for that timeframe and detect a breakout
+2. Confirm against the next higher timeframe's trend, and against the daily trend
+3. Predict breakout success probability with that combo's trained AI model
 4. Fetch news sentiment
 5. Estimate a suggested lot size based on account risk and AI confidence
 6. Notify Discord if all filters pass
-7. Record the last alerted bar per asset in state.json to avoid duplicate notifications
+7. Record the last alerted bar per (asset, timeframe) in state.json
 """
 import os
 import sys
@@ -20,15 +22,7 @@ import yfinance as yf
 sys.path.append(os.path.dirname(__file__))
 from features import build_features, FEATURE_COLUMNS  # noqa: E402
 from news_sentiment import get_news_sentiment  # noqa: E402
-from assets_config import ASSETS  # noqa: E402
-
-INTERVAL = "5m"
-PERIOD = "5d"
-
-H1_INTERVAL = "60m"
-H1_PERIOD = "180d"
-D1_INTERVAL = "1d"
-D1_PERIOD = "2y"
+from assets_config import ASSETS, TIMEFRAMES, DAILY_INTERVAL, DAILY_PERIOD  # noqa: E402
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "model")
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state.json")
@@ -45,6 +39,8 @@ USDJPY_RATE = 150.0
 MIN_CONFIDENCE_SCALE = 0.3
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+
+TIMEFRAMES_BY_KEY = {tf["key"]: tf for tf in TIMEFRAMES}
 
 
 def load_state():
@@ -66,16 +62,16 @@ def fetch_ohlc(ticker, interval, period):
     return df
 
 
-def get_trend_only(ticker, interval, period):
-    try:
-        df = fetch_ohlc(ticker, interval, period)
-    except Exception as e:
-        print("bot: higher timeframe fetch failed", ticker, interval, e)
-        return None
-    if df.empty or len(df) < 60:
-        return None
-    feat = build_features(df)
-    return feat.iloc[-1]["trend"]
+def resample_ohlc(df, rule):
+    agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+    return df.resample(rule).agg(agg).dropna()
+
+
+def fetch_tf_data(ticker, tf):
+    df = fetch_ohlc(ticker, tf["interval"], tf["period"])
+    if tf.get("resample"):
+        df = resample_ohlc(df, tf["resample"])
+    return df
 
 
 def send_discord(payload_text, embed):
@@ -114,8 +110,8 @@ def estimate_lot_size(sl_points, ml_prob, contract_size, quote_currency):
     return lot, round(risk_amount_jpy, 0)
 
 
-def build_embed(asset_label, direction, price, sl, tp, tp2, ml_prob, trend, h1_trend, d1_trend,
-                 news, lot_size, risk_amount_jpy, unit_label):
+def build_embed(asset_label, tf_label, direction, price, sl, tp, tp2, ml_prob,
+                 confirm_trend, daily_trend, news, lot_size, risk_amount_jpy, unit_label):
     is_long = direction == "LONG"
     color = 3066993 if is_long else 15158332
     arrow = "LONG" if is_long else "SHORT"
@@ -132,9 +128,10 @@ def build_embed(asset_label, direction, price, sl, tp, tp2, ml_prob, trend, h1_t
         headlines_txt = "no news"
 
     sentiment_txt = str(news["score"]) + " (" + str(news["headline_count"]) + ")"
+    confirm_txt = confirm_trend if confirm_trend is not None else "n/a"
 
     return {
-        "title": arrow + " AI breakout alert: " + asset_label,
+        "title": arrow + " AI breakout alert: " + asset_label + " [" + tf_label + "]",
         "color": color,
         "fields": [
             {"name": "price", "value": str(round(price, 4)), "inline": True},
@@ -142,9 +139,8 @@ def build_embed(asset_label, direction, price, sl, tp, tp2, ml_prob, trend, h1_t
             {"name": "SL", "value": str(round(sl, 4)) + " (-" + str(sl_pts) + ")", "inline": True},
             {"name": "TP", "value": str(round(tp, 4)) + " (+" + str(tp_pts) + ")", "inline": True},
             {"name": "TP2 extended", "value": str(round(tp2, 4)) + " (+" + str(tp2_pts) + ")", "inline": True},
-            {"name": "5m trend", "value": trend, "inline": True},
-            {"name": "1h trend", "value": h1_trend, "inline": True},
-            {"name": "1d trend", "value": d1_trend, "inline": True},
+            {"name": "higher tf trend", "value": confirm_txt, "inline": True},
+            {"name": "daily trend", "value": daily_trend, "inline": True},
             {"name": "suggested lot", "value": str(lot_size) + " lot (" + unit_label + ")", "inline": True},
             {"name": "risk amount", "value": str(int(risk_amount_jpy)) + " JPY", "inline": True},
             {"name": "news sentiment", "value": sentiment_txt, "inline": True},
@@ -153,116 +149,157 @@ def build_embed(asset_label, direction, price, sl, tp, tp2, ml_prob, trend, h1_t
     }
 
 
+def get_daily_trend(ticker):
+    try:
+        df = fetch_ohlc(ticker, DAILY_INTERVAL, DAILY_PERIOD)
+    except Exception as e:
+        print("bot: daily fetch failed", ticker, e)
+        return None
+    if df.empty or len(df) < 60:
+        return None
+    feat = build_features(df)
+    return feat.iloc[-1]["trend"]
+
+
 def process_asset(asset, state):
     key = asset["key"]
     ticker = asset["ticker"]
-    asset_state = state.get(key, {"last_alert_bar": None})
 
-    df = fetch_ohlc(ticker, INTERVAL, PERIOD)
-    if df.empty or len(df) < 60:
-        print("bot:", key, "not enough 5m data")
-        state[key] = asset_state
-        return
+    tf_features = {}
+    tf_trend = {}
+    for tf in TIMEFRAMES:
+        try:
+            df = fetch_tf_data(ticker, tf)
+        except Exception as e:
+            print("bot:", key, tf["key"], "fetch failed:", e)
+            tf_features[tf["key"]] = None
+            tf_trend[tf["key"]] = None
+            continue
+        if df.empty or len(df) < 60:
+            print("bot:", key, tf["key"], "not enough data")
+            tf_features[tf["key"]] = None
+            tf_trend[tf["key"]] = None
+            continue
+        feat = build_features(df)
+        tf_features[tf["key"]] = feat
+        tf_trend[tf["key"]] = feat.iloc[-1]["trend"]
 
-    feat = build_features(df)
-    latest = feat.iloc[-1]
-    bar_time = str(feat.index[-1])
+    daily_trend = get_daily_trend(ticker)
 
-    if asset_state.get("last_alert_bar") == bar_time:
-        print("bot:", key, "bar already processed")
-        state[key] = asset_state
-        return
+    for tf in TIMEFRAMES:
+        combo_key = key + "_" + tf["key"]
+        combo_state = state.get(combo_key, {"last_alert_bar": None})
 
-    direction = None
-    if bool(latest["long_break"]):
-        direction = "LONG"
-    elif bool(latest["short_break"]):
-        direction = "SHORT"
+        feat = tf_features.get(tf["key"])
+        if feat is None:
+            state[combo_key] = combo_state
+            continue
 
-    if direction is None:
-        print("bot:", key, "no breakout")
-        state[key] = asset_state
-        return
+        latest = feat.iloc[-1]
+        bar_time = str(feat.index[-1])
 
-    trend = latest["trend"]
-    if direction == "LONG" and trend == "down":
-        print("bot:", key, "skip long breakout during 5m downtrend")
-        state[key] = asset_state
-        return
-    if direction == "SHORT" and trend == "up":
-        print("bot:", key, "skip short breakout during 5m uptrend")
-        state[key] = asset_state
-        return
+        if combo_state.get("last_alert_bar") == bar_time:
+            print("bot:", key, tf["key"], "bar already processed")
+            state[combo_key] = combo_state
+            continue
 
-    # ---- multi-timeframe confirmation ----
-    h1_trend = get_trend_only(ticker, H1_INTERVAL, H1_PERIOD)
-    d1_trend = get_trend_only(ticker, D1_INTERVAL, D1_PERIOD)
+        direction = None
+        if bool(latest["long_break"]):
+            direction = "LONG"
+        elif bool(latest["short_break"]):
+            direction = "SHORT"
 
-    if h1_trend is None or d1_trend is None:
-        print("bot:", key, "skip, higher timeframe data unavailable")
-        state[key] = asset_state
-        return
+        if direction is None:
+            print("bot:", key, tf["key"], "no breakout")
+            state[combo_key] = combo_state
+            continue
 
-    if direction == "LONG" and h1_trend != "up":
-        print("bot:", key, "skip long, 1h trend not up:", h1_trend)
-        state[key] = asset_state
-        return
-    if direction == "SHORT" and h1_trend != "down":
-        print("bot:", key, "skip short, 1h trend not down:", h1_trend)
-        state[key] = asset_state
-        return
-    if direction == "LONG" and d1_trend == "down":
-        print("bot:", key, "skip long, 1d trend is down")
-        state[key] = asset_state
-        return
-    if direction == "SHORT" and d1_trend == "up":
-        print("bot:", key, "skip short, 1d trend is up")
-        state[key] = asset_state
-        return
+        own_trend = latest["trend"]
+        if direction == "LONG" and own_trend == "down":
+            print("bot:", key, tf["key"], "skip long, own trend down")
+            state[combo_key] = combo_state
+            continue
+        if direction == "SHORT" and own_trend == "up":
+            print("bot:", key, tf["key"], "skip short, own trend up")
+            state[combo_key] = combo_state
+            continue
 
-    ml_prob = None
-    model_path = os.path.join(MODEL_DIR, "breakout_model_" + key.lower() + ".joblib")
-    if os.path.exists(model_path):
-        model = joblib.load(model_path)
-        X = pd.DataFrame([latest[FEATURE_COLUMNS]])
-        ml_prob = float(model.predict_proba(X)[0][1])
-        if ml_prob < ML_PROB_THRESHOLD:
-            print("bot:", key, "skip, ml probability below threshold", ml_prob)
-            state[key] = asset_state
-            return
+        confirm_key = tf.get("confirm_tf")
+        confirm_trend = tf_trend.get(confirm_key) if confirm_key else None
+        if confirm_key:
+            if confirm_trend is None:
+                print("bot:", key, tf["key"], "skip, confirm timeframe unavailable")
+                state[combo_key] = combo_state
+                continue
+            if direction == "LONG" and confirm_trend != "up":
+                print("bot:", key, tf["key"], "skip long, higher tf not up:", confirm_trend)
+                state[combo_key] = combo_state
+                continue
+            if direction == "SHORT" and confirm_trend != "down":
+                print("bot:", key, tf["key"], "skip short, higher tf not down:", confirm_trend)
+                state[combo_key] = combo_state
+                continue
 
-    news = get_news_sentiment(asset["news_ticker"])
-    if direction == "LONG" and news["score"] < NEWS_VETO_THRESHOLD:
-        print("bot:", key, "skip long, news too bearish", news["score"])
-        state[key] = asset_state
-        return
-    if direction == "SHORT" and news["score"] > -NEWS_VETO_THRESHOLD:
-        print("bot:", key, "skip short, news too bullish", news["score"])
-        state[key] = asset_state
-        return
+        if daily_trend is None:
+            print("bot:", key, tf["key"], "skip, daily trend unavailable")
+            state[combo_key] = combo_state
+            continue
+        if direction == "LONG" and daily_trend == "down":
+            print("bot:", key, tf["key"], "skip long, daily trend down")
+            state[combo_key] = combo_state
+            continue
+        if direction == "SHORT" and daily_trend == "up":
+            print("bot:", key, tf["key"], "skip short, daily trend up")
+            state[combo_key] = combo_state
+            continue
 
-    price = float(latest["Close"])
-    atr_val = float(latest["atr14"])
-    if direction == "LONG":
-        sl = price - atr_val * SL_ATR_MULT
-        tp = price + atr_val * TP_ATR_MULT
-        tp2 = price + atr_val * TP2_ATR_MULT
-    else:
-        sl = price + atr_val * SL_ATR_MULT
-        tp = price - atr_val * TP_ATR_MULT
-        tp2 = price - atr_val * TP2_ATR_MULT
+        ml_prob = None
+        model_path = os.path.join(
+            MODEL_DIR, "breakout_model_" + key.lower() + "_" + tf["key"].lower() + ".joblib"
+        )
+        if os.path.exists(model_path):
+            model = joblib.load(model_path)
+            X = pd.DataFrame([latest[FEATURE_COLUMNS]])
+            ml_prob = float(model.predict_proba(X)[0][1])
+            if ml_prob < ML_PROB_THRESHOLD:
+                print("bot:", key, tf["key"], "skip, ml probability below threshold", ml_prob)
+                state[combo_key] = combo_state
+                continue
 
-    sl_points = abs(price - sl)
-    lot_size, risk_amount_jpy = estimate_lot_size(sl_points, ml_prob, asset["contract_size"], asset["quote_currency"])
+        news = get_news_sentiment(asset["news_ticker"])
+        if direction == "LONG" and news["score"] < NEWS_VETO_THRESHOLD:
+            print("bot:", key, tf["key"], "skip long, news too bearish", news["score"])
+            state[combo_key] = combo_state
+            continue
+        if direction == "SHORT" and news["score"] > -NEWS_VETO_THRESHOLD:
+            print("bot:", key, tf["key"], "skip short, news too bullish", news["score"])
+            state[combo_key] = combo_state
+            continue
 
-    embed = build_embed(
-        asset["label"], direction, price, sl, tp, tp2, ml_prob, trend, h1_trend, d1_trend,
-        news, lot_size, risk_amount_jpy, asset["contract_unit_label"]
-    )
-    send_discord(key + " " + direction + " signal at " + str(price), embed)
+        price = float(latest["Close"])
+        atr_val = float(latest["atr14"])
+        if direction == "LONG":
+            sl = price - atr_val * SL_ATR_MULT
+            tp = price + atr_val * TP_ATR_MULT
+            tp2 = price + atr_val * TP2_ATR_MULT
+        else:
+            sl = price + atr_val * SL_ATR_MULT
+            tp = price - atr_val * TP_ATR_MULT
+            tp2 = price - atr_val * TP2_ATR_MULT
 
-    asset_state["last_alert_bar"] = bar_time
-    state[key] = asset_state
+        sl_points = abs(price - sl)
+        lot_size, risk_amount_jpy = estimate_lot_size(
+            sl_points, ml_prob, asset["contract_size"], asset["quote_currency"]
+        )
+
+        embed = build_embed(
+            asset["label"], tf["label"], direction, price, sl, tp, tp2, ml_prob,
+            confirm_trend, daily_trend, news, lot_size, risk_amount_jpy, asset["contract_unit_label"]
+        )
+        send_discord(key + " " + tf["key"] + " " + direction + " signal at " + str(price), embed)
+
+        combo_state["last_alert_bar"] = bar_time
+        state[combo_key] = combo_state
 
 
 def main():
