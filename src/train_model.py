@@ -1,8 +1,8 @@
 """
-過去のゴールド価格データを取得し、「ブレイクアウトが本物だったか（さらに伸びたか）」を
-学習するモデルを訓練して model/breakout_model.joblib に保存する。
+Fetches historical price data for every asset in assets_config.ASSETS and trains
+one breakout-success model per asset, saving each to model/breakout_model_<key>.joblib
 
-実行頻度の目安: 週1回程度（GitHub Actionsのスケジュール実行を想定）
+Run frequency: about once a week (intended for the scheduled GitHub Actions workflow)
 """
 import sys
 import os
@@ -15,26 +15,25 @@ from sklearn.metrics import accuracy_score, classification_report
 
 sys.path.append(os.path.dirname(__file__))
 from features import build_features, FEATURE_COLUMNS  # noqa: E402
+from assets_config import ASSETS  # noqa: E402
 
-TICKER = "GC=F"          # ゴールド先物（現物XAUUSDと高い相関）
-INTERVAL = "5m"           # 5分足（yfinanceの制約で5分足は直近60日分まで取得可能）
+INTERVAL = "5m"
 PERIOD = "60d"
-LOOKAHEAD_BARS = 6        # ブレイク後、何本先までの値動きで成否を判定するか（5分足なら30分先）
-SUCCESS_ATR_MULT = 0.8    # 成功と判定する値幅の基準（ATRの何倍動いたか）
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "model", "breakout_model.joblib")
+LOOKAHEAD_BARS = 6
+SUCCESS_ATR_MULT = 0.8
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "model")
 
 
-def fetch_data() -> pd.DataFrame:
-    df = yf.download(TICKER, period=PERIOD, interval=INTERVAL, progress=False)
+def fetch_data(ticker):
+    df = yf.download(ticker, period=PERIOD, interval=INTERVAL, progress=False)
     if df.empty:
-        raise RuntimeError("価格データを取得できませんでした。ティッカーやyfinanceの状態を確認してください。")
-    # yfinanceのMultiIndex列に対応
+        raise RuntimeError("no data returned for " + ticker)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
 
 
-def build_training_set(df: pd.DataFrame) -> pd.DataFrame:
+def build_training_set(df):
     feat = build_features(df)
     feat["future_close"] = feat["Close"].shift(-LOOKAHEAD_BARS)
     feat["future_move"] = feat["future_close"] - feat["Close"]
@@ -53,16 +52,18 @@ def build_training_set(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).dropna()
 
 
-def main():
-    print(f"[train] {TICKER} {INTERVAL} データ取得中...")
-    df = fetch_data()
-    print(f"[train] {len(df)}本のローソク足を取得")
+def train_one(asset):
+    key = asset["key"]
+    ticker = asset["ticker"]
+    print("train:", key, ticker, "fetching data...")
+    df = fetch_data(ticker)
+    print("train:", key, len(df), "bars fetched")
 
     train_df = build_training_set(df)
-    print(f"[train] ブレイクアウトサンプル数: {len(train_df)}")
+    print("train:", key, "breakout samples:", len(train_df))
 
     if len(train_df) < 50:
-        print("[train] サンプル数が少なすぎます。学習をスキップします（次回に持ち越し）。")
+        print("train:", key, "not enough samples, skipping this run")
         return
 
     X = train_df[FEATURE_COLUMNS]
@@ -78,12 +79,21 @@ def main():
     model.fit(X_train, y_train)
 
     preds = model.predict(X_test)
-    print("[train] テスト精度:", accuracy_score(y_test, preds))
+    print("train:", key, "test accuracy:", accuracy_score(y_test, preds))
     print(classification_report(y_test, preds, zero_division=0))
 
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-    joblib.dump(model, MODEL_PATH)
-    print(f"[train] モデルを保存しました: {MODEL_PATH}")
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    model_path = os.path.join(MODEL_DIR, "breakout_model_" + key.lower() + ".joblib")
+    joblib.dump(model, model_path)
+    print("train:", key, "model saved to", model_path)
+
+
+def main():
+    for asset in ASSETS:
+        try:
+            train_one(asset)
+        except Exception as e:
+            print("train:", asset["key"], "failed:", e)
 
 
 if __name__ == "__main__":
