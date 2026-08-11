@@ -1,7 +1,7 @@
 """
-ゴールド関連の最新ニュースを取得し、キーワードベースの簡易センチメント判定を行う。
-本格的な精度が欲しい場合は、この関数の中身をFinBERT等のモデルや
-Anthropic APIによるテキスト分類に差し替え可能（README参照）。
+Fetches recent news for a given ticker and scores sentiment with a simple keyword approach.
+Works for any asset (gold, BTC, forex) since it just takes a ticker string.
+Swap score_headline() for a proper NLP/FinBERT model later if you want more accuracy.
 """
 import time
 import yfinance as yf
@@ -9,24 +9,23 @@ import yfinance as yf
 BULLISH_WORDS = [
     "rally", "surge", "gain", "rise", "rises", "rising", "record high", "safe haven",
     "inflation hedge", "buy", "bullish", "upside", "climb", "soar", "strong demand",
-    "rate cut", "dovish", "weaker dollar",
+    "rate cut", "dovish", "weaker dollar", "adoption", "inflow", "breakout", "etf approval",
 ]
 BEARISH_WORDS = [
     "fall", "falls", "falling", "drop", "plunge", "decline", "sell-off", "selloff",
     "bearish", "downside", "rate hike", "hawkish", "stronger dollar", "outflow",
-    "profit-taking", "correction", "weak demand",
+    "profit-taking", "correction", "weak demand", "hack", "ban", "crackdown", "regulation risk",
 ]
 
-TICKER = "GC=F"
 MAX_NEWS_AGE_HOURS = 24
 
 
-def fetch_news(max_items: int = 15):
-    t = yf.Ticker(TICKER)
+def fetch_news(ticker, max_items=15):
+    t = yf.Ticker(ticker)
     try:
         news = t.news or []
     except Exception as e:
-        print(f"[news] ニュース取得に失敗: {e}")
+        print("news: fetch failed for", ticker, e)
         return []
 
     now = time.time()
@@ -39,7 +38,7 @@ def fetch_news(max_items: int = 15):
     return fresh
 
 
-def score_headline(title: str) -> int:
+def score_headline(title):
     t = title.lower()
     score = 0
     for w in BULLISH_WORDS:
@@ -51,15 +50,15 @@ def score_headline(title: str) -> int:
     return score
 
 
-def get_news_sentiment():
+def get_news_sentiment(ticker):
     """
-    戻り値: dict {
-      "score": float,  # -1.0(弱気) 〜 +1.0(強気) に正規化
+    Returns dict {
+      "score": float,   # -1.0 (bearish) to +1.0 (bullish)
       "headline_count": int,
       "top_headlines": list[str]
     }
     """
-    items = fetch_news()
+    items = fetch_news(ticker)
     if not items:
         return {"score": 0.0, "headline_count": 0, "top_headlines": []}
 
@@ -76,7 +75,7 @@ def get_news_sentiment():
         return {"score": 0.0, "headline_count": 0, "top_headlines": []}
 
     raw_avg = sum(scores) / len(scores)
-    normalized = max(-1.0, min(1.0, raw_avg / 3.0))  # 目安として±3語相当で振り切れ
+    normalized = max(-1.0, min(1.0, raw_avg / 3.0))
 
     return {
         "score": round(normalized, 2),
