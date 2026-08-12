@@ -2,8 +2,8 @@ name: Gold Scalp Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # 5分おき（GitHub側の負荷により多少遅延することがあります）
-  workflow_dispatch: {}      # 手動実行用ボタンを有効化
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -26,10 +26,13 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python src/bot.py
 
-      - name: state.jsonの変更をコミット
+      - name: 過去の通知の勝敗チェック
+        run: python src/track_results.py
+
+      - name: state.json と trades.json の変更をコミット
         run: |
           git config user.name "gold-ai-bot"
           git config user.email "actions@github.com"
-          git add state.json
-          git diff --cached --quiet || git commit -m "update state [skip ci]"
+          git add state.json trades.json
+          git diff --cached --quiet || git commit -m "update state and trades [skip ci]"
           git push
