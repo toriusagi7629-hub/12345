@@ -55,6 +55,42 @@ def save_state(state):
         json.dump(state, f)
 
 
+TRADES_PATH = os.path.join(os.path.dirname(__file__), "..", "trades.json")
+
+
+def load_trades():
+    if os.path.exists(TRADES_PATH):
+        with open(TRADES_PATH, "r") as f:
+            return json.load(f)
+    return []
+
+
+def save_trades(trades):
+    with open(TRADES_PATH, "w") as f:
+        json.dump(trades, f, indent=2)
+
+
+def log_trade(asset_key, tf_key, direction, price, sl, tp, tp2, ml_prob, entry_time):
+    trades = load_trades()
+    trade = {
+        "id": asset_key + "_" + tf_key + "_" + entry_time,
+        "asset": asset_key,
+        "timeframe": tf_key,
+        "direction": direction,
+        "entry_price": price,
+        "sl": sl,
+        "tp": tp,
+        "tp2": tp2,
+        "ml_prob": ml_prob,
+        "entry_time": entry_time,
+        "status": "open",
+        "result": None,
+        "close_time": None,
+    }
+    trades.append(trade)
+    save_trades(trades)
+
+
 def fetch_ohlc(ticker, interval, period):
     df = yf.download(ticker, period=period, interval=interval, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
@@ -297,6 +333,7 @@ def process_asset(asset, state):
             confirm_trend, daily_trend, news, lot_size, risk_amount_jpy, asset["contract_unit_label"]
         )
         send_discord(key + " " + tf["key"] + " " + direction + " signal at " + str(price), embed)
+        log_trade(key, tf["key"], direction, price, sl, tp, tp2, ml_prob, bar_time)
 
         combo_state["last_alert_bar"] = bar_time
         state[combo_key] = combo_state
