@@ -28,5 +28,20 @@
     "status": "open",
     "result": null,
     "close_time": null
+  },
+  {
+    "id": "BTC_SWING_4H_2026-08-14 08:00:00+00:00",
+    "asset": "BTC",
+    "timeframe": "SWING_4H",
+    "direction": "SHORT",
+    "entry_price": 62721.25,
+    "sl": 63392.321266526385,
+    "tp": 61602.797889122696,
+    "tp2": 60931.72662259631,
+    "ml_prob": null,
+    "entry_time": "2026-08-14 08:00:00+00:00",
+    "status": "open",
+    "result": null,
+    "close_time": null
   }
 ]
