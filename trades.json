@@ -55,8 +55,8 @@
     "tp2": 60846.53800223229,
     "ml_prob": null,
     "entry_time": "2026-08-14 12:00:00+00:00",
-    "status": "open",
-    "result": null,
-    "close_time": null
+    "status": "closed",
+    "result": "LOSS",
+    "close_time": "2026-08-16 16:00:00+00:00"
   }
 ]
