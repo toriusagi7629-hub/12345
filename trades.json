@@ -25,9 +25,9 @@
     "tp2": 61197.33152103552,
     "ml_prob": null,
     "entry_time": "2026-08-13 16:00:00+00:00",
-    "status": "open",
-    "result": null,
-    "close_time": null
+    "status": "closed",
+    "result": "LOSS",
+    "close_time": "2026-08-17 12:00:00+00:00"
   },
   {
     "id": "BTC_SWING_4H_2026-08-14 08:00:00+00:00",
