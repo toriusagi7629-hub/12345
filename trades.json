@@ -58,5 +58,20 @@
     "status": "closed",
     "result": "LOSS",
     "close_time": "2026-08-16 16:00:00+00:00"
+  },
+  {
+    "id": "BTC_SCALP_5M_2026-08-17 08:00:00+00:00",
+    "asset": "BTC",
+    "timeframe": "SCALP_5M",
+    "direction": "SHORT",
+    "entry_price": 63429.87109375,
+    "sl": 63486.97182422394,
+    "tp": 63334.70320962677,
+    "tp2": 63277.60247915283,
+    "ml_prob": null,
+    "entry_time": "2026-08-17 08:00:00+00:00",
+    "status": "open",
+    "result": null,
+    "close_time": null
   }
 ]
