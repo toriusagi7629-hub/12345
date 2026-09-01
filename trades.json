@@ -73,5 +73,35 @@
     "status": "closed",
     "result": "WIN",
     "close_time": "2026-08-17 08:35:00+00:00"
+  },
+  {
+    "id": "USDJPY_SCALP_5M_2026-09-01 18:45:00+01:00",
+    "asset": "USDJPY",
+    "timeframe": "SCALP_5M",
+    "direction": "LONG",
+    "entry_price": 160.23500061035156,
+    "sl": 160.17785301142726,
+    "tp": 160.33024660855875,
+    "tp2": 160.38739420748308,
+    "ml_prob": 0.5513144496057886,
+    "entry_time": "2026-09-01 18:45:00+01:00",
+    "status": "open",
+    "result": null,
+    "close_time": null
+  },
+  {
+    "id": "USDJPY_SWING_4H_2026-09-01 17:00:00+01:00",
+    "asset": "USDJPY",
+    "timeframe": "SWING_4H",
+    "direction": "LONG",
+    "entry_price": 160.22999572753906,
+    "sl": 159.84579085924636,
+    "tp": 160.87033717469356,
+    "tp2": 161.25454204298626,
+    "ml_prob": 0.5747625127205863,
+    "entry_time": "2026-09-01 17:00:00+01:00",
+    "status": "open",
+    "result": null,
+    "close_time": null
   }
 ]
