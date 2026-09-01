@@ -85,9 +85,9 @@
     "tp2": 160.38739420748308,
     "ml_prob": 0.5513144496057886,
     "entry_time": "2026-09-01 18:45:00+01:00",
-    "status": "open",
-    "result": null,
-    "close_time": null
+    "status": "closed",
+    "result": "LOSS",
+    "close_time": "2026-09-01 20:05:00+01:00"
   },
   {
     "id": "USDJPY_SWING_4H_2026-09-01 17:00:00+01:00",
