@@ -103,5 +103,20 @@
     "status": "open",
     "result": null,
     "close_time": null
+  },
+  {
+    "id": "USDJPY_SWING_4H_2026-09-02 01:00:00+01:00",
+    "asset": "USDJPY",
+    "timeframe": "SWING_4H",
+    "direction": "LONG",
+    "entry_price": 160.29100036621094,
+    "sl": 159.92114713191827,
+    "tp": 160.9074224233654,
+    "tp2": 161.27727565765807,
+    "ml_prob": 0.5775459982783815,
+    "entry_time": "2026-09-02 01:00:00+01:00",
+    "status": "open",
+    "result": null,
+    "close_time": null
   }
 ]
