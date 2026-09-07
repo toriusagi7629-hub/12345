@@ -12,55 +12,39 @@ ASSETS = [
         "contract_size": 1.0,
         "quote_currency": "USD",
     },
-    {
-        "key": "BTC",
-        "label": "BTC",
-        "ticker": "BTC-USD",
-        "news_ticker": "BTC-USD",
-        "contract_unit_label": "BTC",
-        "contract_size": 0.01,
-        "quote_currency": "USD",
-    },
-    {
-        "key": "USDJPY",
-        "label": "USDJPY",
-        "ticker": "JPY=X",
-        "news_ticker": "JPY=X",
-        "contract_unit_label": "USD",
-        "contract_size": 1000.0,
-        "quote_currency": "JPY",
-    },
 ]
 
-# Each timeframe defines its own entry logic. "confirm_tf" points to another
-# timeframe key whose trend must agree before a signal fires. "resample" is
-# used when yfinance has no native interval for that timeframe (e.g. 4h).
 TIMEFRAMES = [
     {
         "key": "SCALP_5M",
-        "label": "5m scalp",
+        "label": "5m",
         "interval": "5m",
         "period": "60d",
         "resample": None,
-        "confirm_tf": "SWING_1H",
     },
     {
         "key": "SWING_1H",
-        "label": "1h swing",
+        "label": "1h",
         "interval": "60m",
         "period": "730d",
         "resample": None,
-        "confirm_tf": "SWING_4H",
     },
     {
         "key": "SWING_4H",
-        "label": "4h swing",
+        "label": "4h",
         "interval": "60m",
         "period": "730d",
         "resample": "4h",
-        "confirm_tf": None,
     },
 ]
 
 DAILY_INTERVAL = "1d"
 DAILY_PERIOD = "5y"
+
+DIRECTION_LOOKAHEAD_BARS = 12
+DIRECTION_ATR_THRESHOLD = 0.5
+
+TRADE_SL_ATR_MULT = 1.5
+TRADE_TP_ATR_MULT = 2.5
+TRADE_TP2_ATR_MULT = 4.0
+TRADE_MAX_BARS = 60
